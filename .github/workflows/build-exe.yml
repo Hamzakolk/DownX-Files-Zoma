@@ -1,4 +1,4 @@
-name: Build DownX.exe
+name: Build DownX.exe and Setup
 
 on:
   workflow_dispatch:
@@ -41,7 +41,16 @@ jobs:
             pyinstaller --noconfirm --onefile --windowed --name DownX --collect-all webview --add-data "ui;ui" --add-binary "ffmpeg.exe;." main.py
           }
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
       - uses: actions/upload-artifact@v4
         with:
-          name: DownX-windows
-          path: dist/DownX.exe
+          name: DownX-Setup
+          path: output/DownX-Setup.exe
