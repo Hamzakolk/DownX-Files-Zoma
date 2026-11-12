@@ -18,7 +18,7 @@ const I18N = {
     free: "Free Space", speed_limit: "Speed limit", unlimited: "No limit", done_label: "Done",
     st_queued: "Queued", st_downloading: "Downloading", st_processing: "Processing", st_paused: "Paused",
     st_done: "Completed", st_seeding: "Seeding", st_failed: "Failed", st_cancelled: "Cancelled",
-    empty: "No downloads here yet.", pause_t: "Pause", resume_t: "Resume", invalid: "Paste a valid link starting with http://, https:// or magnet:",
+    empty: "No downloads here yet.", pause_t: "Pause", resume_t: "Resume", link: "Link", close_tab: "Close tab", open_folder: "Open folder", remove: "Remove", invalid: "Paste a valid link starting with http://, https:// or magnet:",
     no_lt: "Torrent support needs libtorrent (pip install libtorrent).",
     no_ffmpeg: "ffmpeg not found. Merging and MP3 need it.",
     bridge_error: "Browser bridge could not start. The port may be in use.",
@@ -43,7 +43,7 @@ const I18N = {
     free: "المساحة الفارغة", speed_limit: "حد السرعة", unlimited: "بدون حد", done_label: "تم",
     st_queued: "في الانتظار", st_downloading: "جاري التحميل", st_processing: "جاري المعالجة", st_paused: "متوقف مؤقتًا",
     st_done: "اكتمل", st_seeding: "جاري المشاركة", st_failed: "فشل", st_cancelled: "أُلغي",
-    empty: "لا توجد تحميلات هنا بعد.", pause_t: "إيقاف مؤقت", resume_t: "استئناف", invalid: "الصق رابطًا صحيحًا يبدأ بـ http:// أو https:// أو magnet:",
+    empty: "لا توجد تحميلات هنا بعد.", pause_t: "إيقاف مؤقت", resume_t: "استئناف", link: "الرابط", close_tab: "إغلاق التبويب", open_folder: "فتح المجلد", remove: "حذف", invalid: "الصق رابطًا صحيحًا يبدأ بـ http:// أو https:// أو magnet:",
     no_lt: "دعم التورنت يحتاج libtorrent (pip install libtorrent).",
     no_ffmpeg: "ffmpeg غير موجود. الدمج وتحويل MP3 يحتاجانه.",
     bridge_error: "تعذّر تشغيل ربط المتصفح. ربما المنفذ مستخدم.",
@@ -138,6 +138,8 @@ let torrentDown = new Array(60).fill(0);
 let torrentUp = new Array(60).fill(0);
 let msgUntil = 0;
 let busy = false;
+let openTabs = [];
+let activeTab = null;
 
 const $ = (id) => document.getElementById(id);
 const t = (k) => I18N[lang][k] ?? I18N.en[k] ?? k;
@@ -196,9 +198,10 @@ function fillSelect(sel, pairs, current) {
 
 function setView(v) {
   view = v;
+  activeTab = null;
   document.querySelectorAll("[data-view]").forEach((el) => el.classList.toggle("active", el.dataset.view === v));
   $("tpanel").classList.toggle("hidden", v !== "torrent");
-  renderRows();
+  renderMain();
 }
 
 function visible(it) {
@@ -229,7 +232,7 @@ function rowHTML(it) {
   const speed = it.status === "downloading" ? fmtSpeed(it.speed) : "-";
   const time = it.status === "done" ? t("done_label") : fmtTime(it.elapsed);
   return `<div class="row">
-    <div class="c-name">${fileTile(it)}<span class="name" title="${esc(it.url)}">${esc(it.title)}</span></div>
+    <div class="c-name" data-open="${it.id}" title="${t("details")}">${fileTile(it)}<span class="name">${esc(it.title)}</span></div>
     <div class="c-prog"><div class="bar"><div style="width:${pct}%;background:${barColor}"></div></div><span class="pct">${pct}%</span></div>
     <div class="c-speed">${speed}</div>
     <div class="c-size">${size}</div>
@@ -237,6 +240,91 @@ function rowHTML(it) {
     <div class="c-status"><span class="pill" style="background:${color}">${t(sKey)}</span></div>
     <div class="c-act">${pauseBtn}${openBtn}${rmBtn}</div>
   </div>`;
+}
+
+function renderMain() {
+  renderFileTabs();
+  const detailOn = activeTab !== null && snap.items.some((i) => i.id === activeTab);
+  if (activeTab !== null && !detailOn) activeTab = null;
+  $("rows").classList.toggle("hidden", detailOn);
+  $("detail").classList.toggle("hidden", !detailOn);
+  document.querySelector(".thead").classList.toggle("hidden", detailOn);
+  if (detailOn) renderDetail();
+  else renderRows();
+}
+
+function renderFileTabs() {
+  openTabs = openTabs.filter((id) => snap.items.some((i) => i.id === id));
+  const bar = $("filetabs");
+  bar.classList.toggle("hidden", openTabs.length === 0);
+  bar.innerHTML = openTabs.map((id) => {
+    const it = snap.items.find((i) => i.id === id);
+    return `<div class="ftab ${activeTab === id ? "active" : ""}" data-tab="${id}">${fileTile(it)}<span class="ftab-name">${esc(it.title)}</span><button class="ftab-x" data-close="${id}" title="${t("close_tab")}">${icon("x")}</button></div>`;
+  }).join("");
+}
+
+function renderDetail() {
+  const it = snap.items.find((i) => i.id === activeTab);
+  if (!it) return;
+  const [sKey, color] = statusInfo(it);
+  const pct = Math.round((it.progress || 0) * 100);
+  const finished = FINISHED.includes(it.status);
+  const size = it.total ? `${fmtSize(it.downloaded)} / ${fmtSize(it.total)}` : "-";
+  const speed = it.status === "downloading" ? fmtSpeed(it.speed) : "-";
+  const time = it.status === "done" ? t("done_label") : fmtTime(it.elapsed);
+  const barColor = it.kind === "torrent" ? "#2ECC71" : it.status === "processing" ? "#8B5CF6" : it.status === "paused" ? "#F5A524" : "#1E88FF";
+  const pauseBtn = finished ? "" :
+    `<button class="ghost" data-act="${it.paused ? "resume" : "pause"}" data-id="${it.id}">${icon(it.paused ? "play" : "pause")} ${t(it.paused ? "resume_t" : "pause_t")}</button>`;
+  const openBtn = it.status === "done"
+    ? `<button class="ghost" data-act="open" data-id="${it.id}">${icon("folder")} ${t("open_folder")}</button>` : "";
+  $("detail").innerHTML = `
+    <div class="detail-head">${fileTile(it).replace('class="ftile"', 'class="ftile big"')}
+      <div><h2>${esc(it.title)}</h2><span class="pill" style="background:${color}">${t(sKey)}</span></div>
+    </div>
+    <div class="bar big"><div style="width:${pct}%;background:${barColor}"></div></div>
+    <div class="detail-grid">
+      <div class="dcell"><span>${t("col_progress")}</span><b>${pct}%</b></div>
+      <div class="dcell"><span>${t("col_speed")}</span><b>${speed}</b></div>
+      <div class="dcell"><span>${t("col_size")}</span><b>${size}</b></div>
+      <div class="dcell"><span>${t("col_time")}</span><b>${time}</b></div>
+      <div class="dcell"><span>${t("folder")}</span><b>${esc(it.folder)}</b></div>
+      <div class="dcell"><span>${t("col_status")}</span><b>${t(sKey)}</b></div>
+    </div>
+    <div class="detail-url"><span>${t("link")}:</span> ${esc(it.url)}</div>
+    <div class="detail-actions">
+      ${pauseBtn}${openBtn}
+      <button class="ghost" data-act="remove" data-id="${it.id}">${icon("x")} ${t("remove")}</button>
+      <button class="ghost" data-act="close" data-id="${it.id}">${t("close_tab")}</button>
+    </div>`;
+}
+
+function openItem(id) {
+  if (!openTabs.includes(id)) openTabs.push(id);
+  activeTab = id;
+  renderMain();
+}
+
+function closeTab(id) {
+  openTabs = openTabs.filter((x) => x !== id);
+  if (activeTab === id) activeTab = null;
+  renderMain();
+}
+
+async function act(action, id) {
+  const a = api();
+  if (!a) return;
+  if (action === "close") return closeTab(id);
+  if (action === "pause") await a.pause(id);
+  if (action === "resume") await a.resume(id);
+  if (action === "remove") {
+    await a.remove(id);
+    closeTab(id);
+  }
+  if (action === "open") {
+    const it = snap.items.find((i) => i.id === id);
+    if (it) await a.open_folder(it.folder);
+  }
+  refresh();
 }
 
 function renderRows() {
@@ -311,7 +399,7 @@ async function refresh() {
   busy = true;
   try {
     snap = await a.snapshot();
-    renderRows();
+    renderMain();
     updateCounts();
     updateTorrentPanel();
     updateStatus();
@@ -395,7 +483,7 @@ async function toggleLang() {
   const a = api();
   if (a) settings = await a.save_settings({ lang });
   applyStatic();
-  renderRows();
+  renderMain();
   updateCounts();
   updateStatus();
   $("set-lang").textContent = I18N[lang].lang_btn;
@@ -422,19 +510,21 @@ function wire() {
     const id = $("tp-stop").dataset.id;
     if (id) api()?.remove(id).then(refresh);
   });
-  $("rows").addEventListener("click", async (e) => {
+  $("rows").addEventListener("click", (e) => {
     const b = e.target.closest("button[data-act]");
-    if (!b) return;
-    const a = api();
-    const id = b.dataset.id;
-    if (b.dataset.act === "pause") await a.pause(id);
-    if (b.dataset.act === "resume") await a.resume(id);
-    if (b.dataset.act === "remove") await a.remove(id);
-    if (b.dataset.act === "open") {
-      const it = snap.items.find((i) => i.id === id);
-      if (it) await a.open_folder(it.folder);
-    }
-    refresh();
+    if (b) return act(b.dataset.act, b.dataset.id);
+    const name = e.target.closest("[data-open]");
+    if (name) openItem(name.dataset.open);
+  });
+  $("detail").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-act]");
+    if (b) act(b.dataset.act, b.dataset.id);
+  });
+  $("filetabs").addEventListener("click", (e) => {
+    const x = e.target.closest("[data-close]");
+    if (x) return closeTab(x.dataset.close);
+    const tab = e.target.closest("[data-tab]");
+    if (tab) { activeTab = tab.dataset.tab; renderMain(); }
   });
   $("btn-settings").addEventListener("click", openSettings);
   $("btn-tools").addEventListener("click", () => api()?.open_folder(settings.save_dir));
